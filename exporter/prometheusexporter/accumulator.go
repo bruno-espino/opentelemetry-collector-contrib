@@ -688,16 +688,16 @@ func downscaleBucketSide(offset int32, counts []uint64, fromScale, targetScale i
 	newOffset := floorDivInt32(first, factor)
 	newLast := floorDivInt32(last, factor)
 	newLen := int(newLast - newOffset + 1)
+
+	// Accumulate into a new slice. Writing into counts would make the first
+	// bucket add itself when offset does not align with factor, inflating the
+	// bucket population beyond the data point's count.
+	downscaled := make([]uint64, newLen)
 	for i := range counts {
-		k := offset + int32(i)
-		nk := floorDivInt32(k, factor)
-		if k%factor == 0 {
-			counts[nk-newOffset] = counts[i]
-		} else {
-			counts[nk-newOffset] += counts[i]
-		}
+		nk := floorDivInt32(offset+int32(i), factor)
+		downscaled[nk-newOffset] += counts[i]
 	}
-	return newOffset, counts[:newLen]
+	return newOffset, downscaled
 }
 
 func mergeBuckets(offsetA int32, countsA []uint64, offsetB int32, countsB []uint64) (int32, []uint64) {

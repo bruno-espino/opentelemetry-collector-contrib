@@ -5,6 +5,7 @@ package prometheusexporter
 
 import (
 	"log"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -806,6 +807,68 @@ func TestAccumulateDeltaToCumulativeExponentialHistogram(t *testing.T) {
 		require.InDelta(t, 3.0, dp.Sum(), 1e-12)
 		require.Equal(t, uint64(3), dp.Positive().BucketCounts().At(0))
 		require.Equal(t, ts3.Unix(), dp.Timestamp().AsTime().Unix())
+	})
+}
+
+func TestDownscaleBucketSide(t *testing.T) {
+	sumCounts := func(counts []uint64) uint64 {
+		var sum uint64
+		for _, c := range counts {
+			sum += c
+		}
+		return sum
+	}
+
+	t.Run("UnalignedOffsetPreservesPopulation", func(t *testing.T) {
+		// Regression test for
+		// https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/51705:
+		// with offset -1 and a downscale factor of 4, the first bucket used to
+		// add itself, inflating the population beyond the data point's count.
+		counts := []uint64{100, 7, 3, 2000}
+		offset, downscaled := downscaleBucketSide(-1, counts, 20, 18)
+		require.Equal(t, int32(-1), offset)
+		require.Equal(t, []uint64{100, 2010}, downscaled)
+		require.Equal(t, sumCounts(counts), sumCounts(downscaled))
+	})
+
+	t.Run("NegativeUnalignedOffset", func(t *testing.T) {
+		counts := []uint64{3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+		offset, downscaled := downscaleBucketSide(-6, counts, 20, 18)
+		require.Equal(t, int32(-2), offset)
+		require.Equal(t, []uint64{4, 14, 30, 10}, downscaled)
+	})
+
+	t.Run("AlignedOffset", func(t *testing.T) {
+		counts := []uint64{1, 2, 3}
+		offset, downscaled := downscaleBucketSide(-2, counts, 2, 1)
+		require.Equal(t, int32(-1), offset)
+		require.Equal(t, []uint64{3, 3}, downscaled)
+	})
+
+	t.Run("NoDownscaleNeededReturnsInput", func(t *testing.T) {
+		counts := []uint64{1, 2}
+		offset, downscaled := downscaleBucketSide(3, counts, 1, 2)
+		require.Equal(t, int32(3), offset)
+		require.Equal(t, counts, downscaled)
+	})
+
+	t.Run("AlwaysPreservesPopulation", func(t *testing.T) {
+		for shift := int32(1); shift <= 3; shift++ {
+			for offset := int32(-8); offset <= 8; offset++ {
+				counts := make([]uint64, 9)
+				var want uint64
+				for i := range counts {
+					counts[i] = uint64(i*3 + 1)
+					want += counts[i]
+				}
+				original := slices.Clone(counts)
+
+				gotOffset, downscaled := downscaleBucketSide(offset, counts, 20, 20-shift)
+				require.Equal(t, floorDivInt32(offset, int32(1)<<shift), gotOffset)
+				require.Equal(t, want, sumCounts(downscaled), "shift=%d offset=%d", shift, offset)
+				require.Equal(t, original, counts, "input slice must not be mutated")
+			}
+		}
 	})
 }
 
